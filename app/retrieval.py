@@ -49,6 +49,43 @@ def load_pages(source: Path = RAG_SOURCE) -> list[dict]:
     return pages
 
 
+def expand_with_neighbors(hits: list[dict]) -> list[dict]:
+    """検索結果に同じ資料の前後1ページを追加する。"""
+
+    pages = load_pages(RAG_SOURCE)
+    page_index = {
+        (p["document_id"], p["page"]): p
+        for p in pages
+    }
+
+    results = list(hits)
+    seen = {p["page_id"] for p in hits}
+
+    for hit in hits:
+        document_id = hit["document_id"]
+        page_number = hit["page"]
+
+        for neighbor_page in (page_number - 1, page_number + 1):
+            neighbor = page_index.get(
+                (document_id, neighbor_page)
+            )
+
+            if neighbor is None:
+                continue
+
+            if neighbor["page_id"] in seen:
+                continue
+
+            results.append({
+                **neighbor,
+                "source": "adjacent_page",
+                "neighbor_of": hit["page_id"],
+            })
+            seen.add(neighbor["page_id"])
+
+    return results
+
+
 def browse_tree(node_id: str | None = None) -> dict:
     """直下のページは先頭文、指定したページ自身は全文を返す。"""
     tree = json.loads(RAG_TREE.read_text(encoding="utf-8"))
@@ -124,7 +161,7 @@ def open_index(path: Path):
         db.close()
 
 
-def search(query: str) -> list[dict]:
+def search(query: str, include_neighbors: bool = False) -> list[dict]:
     """質問を埋め込み、近いページを最大RAG_TOP_K件返す。"""
     if not isinstance(query, str) or not query.strip():
         raise ValueError("検索語が空です。")
@@ -135,7 +172,8 @@ def search(query: str) -> list[dict]:
                    vec_distance_cosine(embedding, ?) AS distance
             FROM chunks ORDER BY distance, page_id LIMIT ?
         """, (sqlite_vec.serialize_float32(vector), RAG_TOP_K))
-        return [dict(row) for row in rows]
+        hits = [dict(row) for row in rows]
+        return expand_with_neighbors(hits) if include_neighbors else hits
 
 
 def search_graph(query: str) -> dict:
